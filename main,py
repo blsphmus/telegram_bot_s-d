@@ -1,48 +1,85 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ConversationHandler, CallbackContext, CallbackQueryHandler
 import os
-from config import BOT_TOKEN
+import json
+import requests
+from amocrm.v2 import Lead as _Lead, tokens, Pipeline, custom_field
 
-CATEGORY, SUBCATEGORY, OTHER_SUBCATEGORY, CONFIRM_SUBCATEGORY, SIZE_KNOWN, LENGTH, WIDTH, GLASS, COLOR, OTHER_COLOR, CONFIRM_COLOR, VISUAL, SOURCE, OTHER_SOURCE, CONFIRM_SOURCE, COMPLETE = range(16)
+from config import Config
 
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf", ".doc", ".docx"}
+CATEGORY, SUBCATEGORY, OTHER_SUBCATEGORY, CONFIRM_SUBCATEGORY, SIZE_KNOWN, LENGTH, WIDTH, GLASS, COLOR, OTHER_COLOR, CONFIRM_COLOR, VISUAL, SOURCE, OTHER_SOURCE, CONFIRM_SOURCE, PHONE_NUMBER, COMPLETE, CONFIRM_ORDER = range(18)
 
-# Категории и подкатегории
 CATEGORIES = {
-    "Перегородка": ["Каскадная", "Распашная", "Стационарная", "Откатная", "Гармошка", "Безрамочная"],
+    "Перегородка": ["Стационарная", "Распашная", "Откатная", "Каскадная", "Гармошка", "Безрамочная"],
     "Чаша": [],
     "Стеллаж": [],
     "Зеркало": []
 }
 
 GLASS_OPTIONS = ["Матовое", "Прозрачное", "Рифленое", "Тонированное"]
-COLOR_OPTIONS = ["Золотой", "Черный", "Белый"]
+COLOR_OPTIONS = ["Черный", "Белый", "Золотой"]
 SOURCE_OPTIONS = ["Фарпост", "Инстаграм", "Дизайнер", "По рекомендации"]
 
-# Пути к фотографиям и их подписи
 PHOTOS = [
-    {"path": "1.jpg", "caption": "Категория: Каскадная"},
-    {"path": "2.jpg", "caption": "Категория: Каскадная"},
-    {"path": "3.jpg", "caption": "Категория: Каскадная"},
-    {"path": "4.jpg", "caption": "Категория: Каскадная"},
-    {"path": "5.jpg", "caption": "Категория: Гармошка"},
-    {"path": "6.jpg", "caption": "Категория: Гармошка"},
-    {"path": "7.jpg", "caption": "Категория: Гармошка"},
-    {"path": "8.jpg", "caption": "Категория: Распашная"},
-    {"path": "9.jpg", "caption": "Категория: Распашная"},
-    {"path": "10.JPG", "caption": "Категория: Откатная"},
-    {"path": "11.JPG", "caption": "Категория: Откатная"},
-    {"path": "12.jpg", "caption": "Категория: Откатная"},
-    {"path": "13.jpg", "caption": "Категория: Откатная"},
-    {"path": "14.JPG", "caption": "Категория: Безрамочная"},
-    {"path": "15.JPG", "caption": "Категория: Безрамочная"},
-    {"path": "16.PNG", "caption": "Категория: Стационарная"},
-    {"path": "17.JPG", "caption": "Категория: Стационарная"},
-    {"path": "18.JPG", "caption": "Категория: Стационарная"}
+    {"path": f"{i}.jpg", "caption": f"Категория: {cat}"}
+    for i, cat in zip(range(1, 19), [
+        *["Каскадная"] * 4,
+        *["Гармошка"] * 3,
+        *["Распашная"] * 2,
+        *["Откатная"] * 4,
+        *["Безрамочная"] * 2,
+        *["Стационарная"] * 3
+    ])
 ]
 
-# Главное меню
+# токены AmoCRM
+
+def load_tokens():
+    if os.path.exists(Config.TOKEN_FILE):
+        with open(Config.TOKEN_FILE, "r") as file:
+            return json.load(file)
+    return None
+
+def save_tokens(tokens_data):
+    with open(Config.TOKEN_FILE, "w") as file:
+        json.dump(tokens_data, file)
+
+def refresh_tokens():
+    tokens_data = load_tokens()
+    if not tokens_data:
+        print("❌ Ошибка при загрузке токенов")
+        return None
+
+    response = requests.post(
+        f"https://{Config.SUBDOMAIN}.amocrm.ru/oauth2/access_token",
+        json={
+            "client_id": Config.CLIENT_ID,
+            "client_secret": Config.CLIENT_SECRET,
+            "grant_type": "refresh_token",
+            "refresh_token": tokens_data["refresh_token"],
+            "redirect_uri": Config.REDIRECT_URI
+        }
+    )
+
+    if response.status_code == 200:
+        new_tokens = response.json()
+        save_tokens(new_tokens)
+        return new_tokens["access_token"]
+    else:
+        print("❌ Ошибка при обновлении токенов")
+        return None
+
+def get_access_token():
+    tokens_data = load_tokens()
+    if not tokens_data:
+        print("❌ Токены не найдены")
+        return None
+    return tokens_data.get("access_token") or refresh_tokens()
+
 async def main_menu(update: Update, context: CallbackContext):
+    
+    context.user_data.clear()
+
     if update.message and update.message.text == "/start":
         welcome_text = (
             "👋 Здравствуйте! Спасибо, что выбрали нашу компанию. На связи бот компании Svarka&Design. 🌟\n\n"
@@ -51,29 +88,31 @@ async def main_menu(update: Update, context: CallbackContext):
             "- Использовать команду /menu\n"
             "- Написать в чат слово \"меню\"\n\n"
             "Мы всегда рядом, чтобы сделать ваш опыт приятным и удобным! 😊"
-        )
+        ) 
         await update.message.reply_text(welcome_text)
 
     keyboard = [
-        [InlineKeyboardButton("📝 Заказ расчета/КП", callback_data='order')],
+        [InlineKeyboardButton("📝 ЗАКАЗАТЬ РАСЧЁТ", callback_data='order')],
         [InlineKeyboardButton("🖼️ Портфолио", callback_data='gallery')],
         [InlineKeyboardButton("🏢 О компании", callback_data='about')],
         [InlineKeyboardButton("📞 Обратная связь", callback_data='feedback')],
+        [InlineKeyboardButton("🛠 Техподдержка", callback_data='support')], 
         [InlineKeyboardButton("❓ FAQ", callback_data='faq')],
-        [InlineKeyboardButton("📊 Статус заказа", callback_data='status')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
     if update.callback_query:
         await update.callback_query.edit_message_text("Выберите раздел:", reply_markup=reply_markup)
     else:
         await update.message.reply_text("Выберите раздел:", reply_markup=reply_markup)
+
+    return ConversationHandler.END
 
 # О компании
 async def about_company(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
 
-    # Текст о компании
     about_text = (
         "🌟 *Создаем уникальные металлоконструкции, которые вдохновляют!*\n\n"
         "Мы специализируемся на производстве:\n"
@@ -99,44 +138,37 @@ async def about_company(update: Update, context: CallbackContext):
         "Доверьте нам ваш проект, и мы создадим то, что станет вашей гордостью!\n"
     )
 
-    # Кнопка "Назад"
     keyboard = [
         [InlineKeyboardButton("🔙 Назад", callback_data='back_to_main')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Отправляем сообщение
     await query.edit_message_text(
         about_text,
         reply_markup=reply_markup,
-        parse_mode="Markdown"  # Для красивого форматирования текста
+        parse_mode="Markdown"
     )
 
-# Текущий индекс фотографии
 current_photo_index = 0
 
-# Функция для отображения галереи
 async def gallery(update: Update, context: CallbackContext):
     global current_photo_index
-    current_photo_index = 0  # Сбрасываем индекс при входе в галерею
+    current_photo_index = 0
     await show_photo(update, context)
 
-# Функция для отображения фотографии
 async def show_photo(update: Update, context: CallbackContext):
     global current_photo_index
     photo = PHOTOS[current_photo_index]
 
-    # Кнопки для навигации
     keyboard = [
         [
             InlineKeyboardButton("⬅️ Назад", callback_data='prev_photo'),
             InlineKeyboardButton("➡️ Вперед", callback_data='next_photo')
         ],
-        [InlineKeyboardButton("🔙 Назад в меню", callback_data='back_to_main')]  # Кнопка "Назад"
+        [InlineKeyboardButton("🔙 Назад в меню", callback_data='back_to_main')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Если сообщение с фотографией уже существует, редактируем его
     if 'photo_message_id' in context.user_data:
         try:
             await context.bot.edit_message_media(
@@ -146,15 +178,14 @@ async def show_photo(update: Update, context: CallbackContext):
                 reply_markup=reply_markup
             )
         except Exception as e:
-            print(f"Ошибка при редактировании сообщения: {e}")
+            print("❌ Произошла какая-то ошибка, напишите нам [в Telegram](https://t.me/+79953969908) об этом!!")
     else:
-        # Если сообщения с фотографией нет, отправляем новое
+
         message = await update.callback_query.message.reply_photo(
-            photo=open(photo['path'], 'rb'),  # Открываем файл в бинарном режиме
+            photo=open(photo['path'], 'rb'),
             caption=photo['caption'],
             reply_markup=reply_markup
         )
-        # Сохраняем ID сообщения с фотографией
         context.user_data['photo_message_id'] = message.message_id
 
 # Обработчик для навигации по фотографиям
@@ -164,42 +195,36 @@ async def handle_photo_navigation(update: Update, context: CallbackContext):
     await query.answer()
 
     if query.data == 'next_photo':
-        # Переход к следующей фотографии
         current_photo_index += 1
         if current_photo_index >= len(PHOTOS):
-            current_photo_index = 0  # Зацикливаем на первую фотографию
+            current_photo_index = 0
     elif query.data == 'prev_photo':
-        # Переход к предыдущей фотографии
         current_photo_index -= 1
         if current_photo_index < 0:
-            current_photo_index = len(PHOTOS) - 1  # Зацикливаем на последнюю фотографию
+            current_photo_index = len(PHOTOS) - 1
     elif query.data == 'back_to_main':
-        # Удаление текущего сообщения с фотографией
         if 'photo_message_id' in context.user_data:
             try:
                 await context.bot.delete_message(
                     chat_id=query.message.chat_id,
                     message_id=context.user_data['photo_message_id']
                 )
-                del context.user_data['photo_message_id']  # Удаляем ID сообщения из контекста
+                del context.user_data['photo_message_id']
             except Exception as e:
-                print(f"Ошибка при удалении сообщения: {e}")
+                print("❌ Произошла какая-то ошибка, напишите нам [в Telegram](https://t.me/+79953969908) об этом!!")
 
-        # Сбрасываем индекс фотографии
         current_photo_index = 0
 
-        # Возвращаемся в главное меню, создавая новое сообщение
         await query.message.reply_text("Выберите раздел:", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📝 Заказ расчета/КП", callback_data='order')],
+            [InlineKeyboardButton("📝 ЗАКАЗАТЬ РАСЧЁТ", callback_data='order')],
             [InlineKeyboardButton("🖼️ Портфолио", callback_data='gallery')],
             [InlineKeyboardButton("🏢 О компании", callback_data='about')],
             [InlineKeyboardButton("📞 Обратная связь", callback_data='feedback')],
+            [InlineKeyboardButton("🛠 Техподдержка", callback_data='support')],
             [InlineKeyboardButton("❓ FAQ", callback_data='faq')],
-            [InlineKeyboardButton("📊 Статус заказа", callback_data='status')]
         ]))
         return
 
-    # Показываем обновлённое фото
     await show_photo(update, context)
 
 # Обратная связь
@@ -207,43 +232,25 @@ async def feedback(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
 
-    # Текст с контактной информацией
     feedback_text = (
         "📞 *Свяжитесь с нами!*\n\n"
         "🔗 *WhatsApp:* [+7 914 728 18 18](https://wa.me/79147281818)\n"
         "📸 *Instagram:* [@svarkavl](https://www.instagram.com/svarkavl)\n"
-        "🌐 *Сайт:* [svarka25.ru](https://svarka25.ru/)\n\n"
+        "🌐 *Сайт:* [svarka25.ru](https://svarka25.ru/)\n"
+        "📍 *Мы в 2ГИС:* [Открыть в 2ГИС](https://2gis.ru/vladivostok/geo/70000001076981081)\n\n"
         "Мы всегда готовы ответить на ваши вопросы и помочь с выбором! 😊"
     )
 
-    # Кнопка "Назад"
     keyboard = [
         [InlineKeyboardButton("🔙 Назад", callback_data='back_to_main')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Отправляем сообщение
     await query.edit_message_text(
         feedback_text,
         reply_markup=reply_markup,
-        parse_mode="Markdown",  # Для красивого форматирования текста
-        disable_web_page_preview=False  # Показываем превью ссылок
-    )
-
-# Статус заказа
-async def order_status(update: Update, context: CallbackContext):
-    query = update.callback_query
-    await query.answer()
-
-    # Кнопка "Назад"
-    keyboard = [
-        [InlineKeyboardButton("🔙 Назад", callback_data='back_to_main')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await query.edit_message_text(
-        "Для проверки статуса заказа введите номер заказа:",
-        reply_markup=reply_markup
+        parse_mode="Markdown",
+        disable_web_page_preview=False
     )
 
 # FAQ
@@ -251,7 +258,6 @@ async def faq(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
 
-    # Текст с часто задаваемыми вопросами
     faq_text = (
         "❓ *Часто задаваемые вопросы:*\n\n"
         "1. *Как заказать?*\n"
@@ -263,40 +269,67 @@ async def faq(update: Update, context: CallbackContext):
         "Если у вас остались вопросы, свяжитесь с нами через раздел «Обратная связь»!"
     )
 
-    # Кнопка "Назад"
     keyboard = [
         [InlineKeyboardButton("🔙 Назад", callback_data='back_to_main')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Отправляем сообщение
     await query.edit_message_text(
         faq_text,
         reply_markup=reply_markup,
-        parse_mode="Markdown"  # Для красивого форматирования текста
+        parse_mode="Markdown"
     )
 
-# Отображение главного меню из callback-запроса
+async def support(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+
+    support_text = (
+        "🛠 Техническая поддержка:\n\n"
+        "Если у вас возникли проблемы с ботом или заказом, свяжитесь с нами:\n\n"
+        "📞 Контакт: `+7 (914) 728-18-18`\n"
+        "📲 Telegram: [Рабочий аккаунт](https://t.me/+79953969908)\n"
+        "🔗 WhatsApp: [+7 914 728 18 18](https://wa.me/79147281818)\n"
+        "📸 Instagram: [@svarkavl](https://www.instagram.com/svarkavl)\n"
+        "📍 *2ГИС:* [Открыть в 2ГИС](https://2gis.ru/vladivostok/geo/70000001076981081)\n\n"
+        "Мы всегда готовы помочь и решить любые вопросы! 😊"
+    )
+
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data='back_to_main')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        support_text,
+        reply_markup=reply_markup,
+        parse_mode="Markdown",
+        disable_web_page_preview=False
+    )
+
+
 async def main_menu_from_query(query):
     keyboard = [
-        [InlineKeyboardButton("📝 Заказ расчета/КП", callback_data='order')],
+        [InlineKeyboardButton("📝 ЗАКАЗАТЬ РАСЧЁТ", callback_data='order')],
         [InlineKeyboardButton("🖼️ Портфолио", callback_data='gallery')],
         [InlineKeyboardButton("🏢 О компании", callback_data='about')],
         [InlineKeyboardButton("📞 Обратная связь", callback_data='feedback')],
+        [InlineKeyboardButton("🛠 Техподдержка", callback_data='support')],
         [InlineKeyboardButton("❓ FAQ", callback_data='faq')],
-        [InlineKeyboardButton("📊 Статус заказа", callback_data='status')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("Выберите раздел:", reply_markup=reply_markup)
 
 # Начало процесса заказа КП
 async def start_order(update: Update, context: CallbackContext) -> int:
-    context.user_data.clear()  # Очищаем данные
+    context.user_data.clear()
     keyboard = [[InlineKeyboardButton(cat, callback_data=cat)] for cat in CATEGORIES.keys()]
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.callback_query.message.edit_text("Выберите категорию:", reply_markup=reply_markup)
+    if update.callback_query:
+        await update.callback_query.edit_message_text("Выберите категорию:", reply_markup=reply_markup)
+    else:
+        await update.message.reply_text("Выберите категорию:", reply_markup=reply_markup)
+    
     return CATEGORY
 
 # Выбор подкатегории
@@ -315,30 +348,34 @@ async def choose_subcategory(update: Update, context: CallbackContext) -> int:
     await query.answer()
 
     if CATEGORIES[category]:
-        keyboard = [[InlineKeyboardButton(sub, callback_data=sub)] for sub in CATEGORIES[category]]
-        keyboard.append([InlineKeyboardButton("Другое", callback_data="other_subcategory")])  # Добавляем кнопку "Другое"
+        keyboard = [[InlineKeyboardButton(sub, callback_data=f"sub_{sub}")] for sub in CATEGORIES[category]]
+        keyboard.append([InlineKeyboardButton("Другое", callback_data="other_subcategory")])
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_category")])
         reply_markup = InlineKeyboardMarkup(keyboard)
+
         await query.edit_message_text("Выберите подкатегорию:", reply_markup=reply_markup)
         return SUBCATEGORY
     else:
-        context.user_data["subcategory"] = "Не указано"
         return await ask_size(update, context)
+    
+async def handle_subcategory_selection(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    subcategory = query.data.replace("sub_", "")
 
-# Возврат к категории
+    context.user_data["subcategory"] = subcategory
+    await query.answer()
+    
+    return await ask_size(update, context)
+
 async def back_to_category(update: Update, context: CallbackContext) -> int:
     await start_order(update, context)
     return CATEGORY
 
-# Запрашиваем, знает ли пользователь размер
 async def ask_size(update: Update, context: CallbackContext) -> int:
-    # Проверяем, что запрос был вызван через callback_query
     if update.callback_query:
         query = update.callback_query
         if query.data == "back_to_category":
             return await back_to_category(update, context)
-
-        context.user_data["subcategory"] = query.data
         await query.answer()
 
         keyboard = [
@@ -348,7 +385,6 @@ async def ask_size(update: Update, context: CallbackContext) -> int:
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text("Знаете ли вы размер?", reply_markup=reply_markup)
-    # Если запрос был вызван текстовым сообщением
     elif update.message:
         keyboard = [
             [InlineKeyboardButton("Да", callback_data="yes"), InlineKeyboardButton("Нет", callback_data="no")],
@@ -365,20 +401,16 @@ async def back_to_main(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
 
-    # Удаляем сообщение с фотографией, если оно существует
     if 'photo_message_id' in context.user_data:
         try:
             await context.bot.delete_message(
                 chat_id=query.message.chat_id,
                 message_id=context.user_data['photo_message_id']
             )
-            del context.user_data['photo_message_id']  # Удаляем ID сообщения из контекста
+            del context.user_data['photo_message_id']
         except Exception as e:
-            print(f"Ошибка при удалении сообщения: {e}")
-
+            print("❌ Произошла какая-то ошибка, напишите нам [в Telegram](https://t.me/+79953969908) об этом!!")
     await main_menu_from_query(query)
-    # Обновляем главное меню
-    await main_menu(update, context)
     return ConversationHandler.END
 
 # Обработка ответа на вопрос о размере
@@ -389,8 +421,8 @@ async def handle_size_known(update: Update, context: CallbackContext) -> int:
     if query.data == "yes":
         return await ask_length(update, context)
     elif query.data == "no":
-        context.user_data["length"] = "Не указано"
-        context.user_data["width"] = "Не указано"
+        context.user_data["length"] = "0"
+        context.user_data["width"] = "0"
         return await ask_glass(update, context)
     elif query.data == "back_to_category":
         return await back_to_category(update, context)
@@ -406,16 +438,14 @@ async def ask_length(update: Update, context: CallbackContext) -> int:
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_size_known")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await query.edit_message_text("Введите длину (м) с помощью кнопок:", reply_markup=reply_markup)
+    await query.edit_message_text("Введите высоту (в метрах) с помощью кнопок:", reply_markup=reply_markup)
     return LENGTH
 
-# Обработка нажатия "Назад" в выборе длины
 async def back_to_size_known(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
     return await ask_size(update, context)
 
-# Обработка длины
 async def handle_length_input(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
@@ -441,11 +471,10 @@ async def handle_length_input(update: Update, context: CallbackContext) -> int:
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_size_known")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await query.edit_message_text(f"Введите длину (м): {context.user_data['length_input']}", reply_markup=reply_markup)
+    await query.edit_message_text(f"Введите высоту (в метрах): {context.user_data['length_input']}", reply_markup=reply_markup)
     return LENGTH
 
 def generate_number_keyboard(prefix: str, allow_dot: bool = True):
-    """Генерирует клавиатуру с цифрами, точкой и управляющими кнопками."""
     keyboard = [
         [InlineKeyboardButton("1", callback_data=f"{prefix}_1"),
          InlineKeyboardButton("2", callback_data=f"{prefix}_2"),
@@ -467,7 +496,6 @@ def generate_number_keyboard(prefix: str, allow_dot: bool = True):
 
     return keyboard
 
-# Запрос ширины
 async def ask_width(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
@@ -478,16 +506,14 @@ async def ask_width(update: Update, context: CallbackContext) -> int:
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_length")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await query.edit_message_text("Введите ширину (м) с помощью кнопок:", reply_markup=reply_markup)
+    await query.edit_message_text("Введите ширину (в метрах) с помощью кнопок:", reply_markup=reply_markup)
     return WIDTH
 
-# Обработка нажатия "Назад" в выборе ширины
 async def back_to_length(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
     return await ask_length(update, context)
 
-# Обработка ширины
 async def handle_width_input(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
@@ -513,14 +539,11 @@ async def handle_width_input(update: Update, context: CallbackContext) -> int:
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_length")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await query.edit_message_text(f"Введите ширину (м): {context.user_data['width_input']}", reply_markup=reply_markup)
+    await query.edit_message_text(f"Введите ширину (в метрах): {context.user_data['width_input']}", reply_markup=reply_markup)
     return WIDTH
 
-# Запрашиваем стекло только для категории "Перегородка"
 async def ask_glass(update: Update, context: CallbackContext) -> int:
-    # Проверяем, является ли категория "Перегородка"
     if context.user_data.get("category") != "Перегородка":
-        # Если категория не "Перегородка", пропускаем выбор стекла
         context.user_data["glass"] = "Не указано"
         return await ask_color(update, context)
 
@@ -534,400 +557,444 @@ async def ask_glass(update: Update, context: CallbackContext) -> int:
     await query.edit_message_text("Какое стекло хотите?", reply_markup=reply_markup)
     return GLASS
 
-# Запрашиваем цвет
 async def ask_color(update: Update, context: CallbackContext) -> int:
-    query = update.callback_query
-    context.user_data["glass"] = query.data  # Сохраняем стекло
-    await query.answer()
+    if update.callback_query:
+        query = update.callback_query
+        context.user_data["glass"] = query.data
+        await query.answer()
+        send = query.edit_message_text
+    else:
+        send = update.message.reply_text
 
     keyboard = [[InlineKeyboardButton(opt, callback_data=opt)] for opt in COLOR_OPTIONS]
-    keyboard.append([InlineKeyboardButton("Другое", callback_data="other_color")])  # Добавляем кнопку "Другое"
+    keyboard.append([InlineKeyboardButton("Другое", callback_data="other_color")])
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_glass")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await query.edit_message_text("Выберите цвет:", reply_markup=reply_markup)
+    await send("Выберите цвет:", reply_markup=reply_markup)
     return COLOR
+
 
 async def handle_color_selection(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
-    context.user_data["color"] = query.data  # Сохраняем цвет
+    selected_option = query.data
+
+    if selected_option in COLOR_OPTIONS:
+        context.user_data["color"] = selected_option
+    else:
+        await query.answer("Ошибка: выберите цвет из списка!", show_alert=True)
+        return COLOR
+
     await query.answer()
-    return await ask_visual(update, context)
+    return await ask_phone_number(update, context)
     
-# Обработка нажатия "Назад" в выборе цвета
 async def back_to_glass(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
     return await ask_glass(update, context)
 
-# Переход к визуализации
-async def ask_visual(update: Update, context: CallbackContext) -> int:
-    # Проверяем, вызвано ли через callback_query или текстовое сообщение
-    if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-
-        keyboard = [
-            [InlineKeyboardButton("📎 Прикрепить файл", callback_data="upload")],
-            [InlineKeyboardButton("⏭ Пропустить", callback_data="skip")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_color")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await query.edit_message_text(
-            "Есть ли у вас визуализация? 📎 Прикрепите файл или нажмите 'Пропустить'.",
-            reply_markup=reply_markup
-        )
-    elif update.message:
-        keyboard = [
-            [InlineKeyboardButton("📎 Прикрепить файл", callback_data="upload")],
-            [InlineKeyboardButton("⏭ Пропустить", callback_data="skip")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_color")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(
-            "Есть ли у вас визуализация? 📎 Прикрепите файл или нажмите 'Пропустить'.",
-            reply_markup=reply_markup
-        )
-
-    return VISUAL
-
-
-async def handle_visual_selection(update: Update, context: CallbackContext) -> int:
+async def ask_phone_number(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
 
-    if query.data == "upload":
-        await query.edit_message_text("📎 Пришлите фото или файл с визуализацией (допустимые форматы: *.jpg, *.jpeg, *.png, *.pdf, *.doc, *.docx).")
-        return VISUAL
-    else:
-        if "visuals" not in context.user_data or not context.user_data["visuals"]:
-            context.user_data["visuals"] = ["Без визуализации"]
-
-        return await ask_source(update, context)
-
-async def upload_visual(update: Update, context: CallbackContext) -> int:
-    """Принимает файл визуализации, проверяет его и сохраняет."""
-    document = update.message.document
-    photo = update.message.photo[-1] if update.message.photo else None
-
-    if photo:
-        file_id = photo.file_id
-        file_info = await context.bot.get_file(file_id)
-        file_name = f"{file_id}.jpg"  # Сохраняем фото как JPG
-    elif document:
-        file_id = document.file_id
-        file_name = document.file_name
-        file_extension = os.path.splitext(file_name)[1].lower()
-
-        # Проверяем разрешенные расширения
-        if file_extension not in ALLOWED_EXTENSIONS:
-            await update.message.reply_text(
-                "⛔ Неподдерживаемый тип файла. Принимаются только изображения (.jpg, .jpeg, .png, .gif) и PDF."
-            )
-            return VISUAL
-
-        file_info = await context.bot.get_file(file_id)
-    else:
-        await update.message.reply_text("⛔ Не удалось определить тип файла. Попробуйте снова.")
-        return VISUAL
-
-    # Скачиваем файл
-    save_path = os.path.join("visuals", file_name)  # Путь для сохранения
-    os.makedirs("visuals", exist_ok=True)  # Создаем директорию, если она не существует
-
-    try:
-        await file_info.download_to_drive(save_path)
-    except Exception as e:
-        await update.message.reply_text(f"⛔ Ошибка при сохранении файла: {e}")
-        return VISUAL
-
-    # Сохраняем информацию о файле в контексте
-    if "visuals" not in context.user_data:
-        context.user_data["visuals"] = []
-    context.user_data["visuals"].append(save_path)
-
-    # Кнопки для продолжения
     keyboard = [
-        [InlineKeyboardButton("📎 Добавить еще", callback_data="upload")],
-        [InlineKeyboardButton("⏭ Дальше", callback_data="next")]
+        [KeyboardButton("📞 Поделиться контактом", request_contact=True)],
+        [KeyboardButton("🔙 Назад")]
     ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+
+    await query.message.reply_text(
+        "Поделитесь с нами вашим номером телефона, чтобы мы смогли продолжить работу с вами:",
+        reply_markup=reply_markup
+    )
+    return PHONE_NUMBER
+
+async def handle_phone_number(update: Update, context: CallbackContext) -> int:
+    if update.message.text and update.message.text.strip() == "🔙 Назад":
+        await update.message.reply_text("Хорошо, вернёмся к выбору цвета!", reply_markup=ReplyKeyboardRemove())
+        return await ask_color(update, context)
+
+    if update.message.contact:
+        phone_number = update.message.contact.phone_number
+
+    elif update.message.text:
+        phone_number = update.message.text.strip()
+    else:
+        await update.message.reply_text("Пожалуйста, отправьте номер телефона.")
+        return PHONE_NUMBER
+
+    context.user_data["phone_number"] = phone_number
+
+    await update.message.reply_text(
+        "Спасибо! Ваш номер сохранен.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    return await ask_source(update, context)
+
+
+
+    
+async def back_to_phone_number(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    await query.answer()
+    return await ask_phone_number(update, context)
+
+async def ask_source(update: Update, context: CallbackContext) -> int:
+    keyboard = [[InlineKeyboardButton(opt, callback_data=opt)] for opt in SOURCE_OPTIONS]
+    keyboard.append([InlineKeyboardButton("Другое", callback_data="other_source")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_phone_number")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        await query.edit_message_text("Откуда узнали о нас?", reply_markup=reply_markup)
+    elif update.message:
+        await update.message.reply_text("Откуда узнали о нас?", reply_markup=reply_markup)
+
+    return SOURCE
+
+
+async def handle_source_selection(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    selected_source = query.data 
+
+    if selected_source in SOURCE_OPTIONS:
+        context.user_data["source"] = selected_source
+    else:
+        await query.answer("Ошибка: выберите источник из списка!", show_alert=True)
+        return SOURCE
+
+    await query.answer()
+    return await confirm_order(update, context)
+
+async def back_to_color(update: Update, context: CallbackContext) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        return await ask_color(update, context)
+    elif update.message:
+        return await ask_color(update, context)
+
+async def handle_other_option(update: Update, context: CallbackContext, field: str, next_state: int, back_state: int) -> int:
+    query = update.callback_query
+    if query:
+        await query.answer()
+        await query.edit_message_text(f"Напишите свой вариант:")
+        return next_state
+
+async def save_other_option(update: Update, context: CallbackContext, field: str, confirm_state: int) -> int:
+    user_input = update.message.text.strip()
+    if not user_input:
+        await update.message.reply_text("Пожалуйста, введите корректное значение.")
+        return confirm_state
+
+    context.user_data[field] = user_input
+    keyboard = [
+        [InlineKeyboardButton("Сохранить", callback_data=f"confirm_{field}"),
+        InlineKeyboardButton("Переписать", callback_data=f"rewrite_{field}")]
+    ]
+
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        f"✅ Файл '{file_name}' успешно загружен. Хотите добавить еще или перейти дальше?",
+        f"Вы ввели: {user_input}.\nПодтвердите или измените:",
         reply_markup=reply_markup
     )
-    return VISUAL
+    return confirm_state
 
-
-async def finish_visual(update: Update, context: CallbackContext) -> int:
-    """Переход к следующему этапу после загрузки всех файлов."""
-    query = update.callback_query
-    await query.answer()
-    return await ask_source(update, context)
-
-# Запрашиваем источник
-async def ask_source(update: Update, context: CallbackContext) -> int:
+async def confirm_other_option(update: Update, context: CallbackContext, field: str, next_state: int, back_state: int) -> int:
     query = update.callback_query
     await query.answer()
 
-    keyboard = [[InlineKeyboardButton(opt, callback_data=opt)] for opt in SOURCE_OPTIONS]
-    keyboard.append([InlineKeyboardButton("Другое", callback_data="other_source")])  # Добавляем кнопку "Другое"
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_visual")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await query.edit_message_text("Откуда узнали о нас?", reply_markup=reply_markup)
-    return SOURCE
-
-# Возвращение к визуализации
-async def back_to_visual(update: Update, context: CallbackContext) -> int:
-    query = update.callback_query
-    await query.answer()
-    return await ask_visual(update, context)
-
-# Обработка нажатия "Назад" в выборе источника
-async def back_to_color(update: Update, context: CallbackContext) -> int:
-    query = update.callback_query
-    await query.answer()
-    return await ask_color(update, context)
+    if query.data == f"rewrite_{field}":
+        await query.edit_message_text(f"Напишите нам свой вариант!:")
+        return back_state
+    elif query.data == f"confirm_{field}":
+        await query.edit_message_text("Значение сохранено. Переходим к следующему шагу.")
+        return next_state
 
 async def handle_other_subcategory(update: Update, context: CallbackContext) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("Напишите свою подкатегорию:")
-    return OTHER_SUBCATEGORY  # Убедитесь, что возвращается правильное состояние
+    return await handle_other_option(update, context, "subcategory", OTHER_SUBCATEGORY, SUBCATEGORY)
 
 async def save_other_subcategory(update: Update, context: CallbackContext) -> int:
-    if update.message:
-        user_input = update.message.text
-        context.user_data["subcategory"] = user_input
+    return await save_other_option(update, context, "subcategory", CONFIRM_SUBCATEGORY)
 
-        # Проверяем, нужно ли предложить сохранить или переписать
-        if context.user_data.get("rewrite_subcategory"):
-            del context.user_data["rewrite_subcategory"]  # Убираем флаг переписывания
-            await update.message.reply_text("Подкатегория обновлена.")
-            return await ask_size(update, context)
-        else:
-            # Предлагаем переписать или сохранить
-            keyboard = [
-                [InlineKeyboardButton("Переписать", callback_data="rewrite_subcategory")],
-                [InlineKeyboardButton("Сохранить", callback_data="confirm_subcategory")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            await update.message.reply_text(
-                f"Подкатегория '{user_input}' сохранена. Хотите переписать или сохранить?",
-                reply_markup=reply_markup
-            )
-            return CONFIRM_SUBCATEGORY  # Используем состояние подтверждения
-
-async def handle_confirm_subcategory(update: Update, context: CallbackContext) -> int:
+async def confirm_other_subcategory(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
-
-    if query.data == "rewrite_subcategory":
-        # Устанавливаем флаг переписывания
-        context.user_data["rewrite_subcategory"] = True
+    
+    if query.data == "confirm_subcategory":
+        return await ask_size(update, context)
+    elif query.data == "rewrite_subcategory":
         await query.edit_message_text("Напишите новую подкатегорию:")
         return OTHER_SUBCATEGORY
-    elif query.data == "confirm_subcategory":
-        # Подтверждаем и переходим к следующему этапу
-        await query.edit_message_text("Подкатегория сохранена. Переходим к следующему шагу.")
-        return await ask_size(update, context)
-
 
 async def handle_other_color(update: Update, context: CallbackContext) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("Напишите свой цвет:")
-    return OTHER_COLOR
+    return await handle_other_option(update, context, "color", OTHER_COLOR, COLOR)
 
 async def save_other_color(update: Update, context: CallbackContext) -> int:
-    if update.message:
-        user_input = update.message.text
-        context.user_data["color"] = user_input
+    return await save_other_option(update, context, "color", CONFIRM_COLOR)
 
-        # Проверяем, нужно ли предложить сохранить или переписать
-        if context.user_data.get("rewrite_color"):
-            del context.user_data["rewrite_color"]  # Убираем флаг переписывания
-            await update.message.reply_text("Цвет обновлён.")
-            return await ask_visual(update, context)
-        else:
-            # Предлагаем переписать или сохранить
-            keyboard = [
-                [InlineKeyboardButton("Переписать", callback_data="rewrite_color")],
-                [InlineKeyboardButton("Сохранить", callback_data="confirm_color")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            await update.message.reply_text(
-                f"Цвет '{user_input}' сохранён. Хотите переписать или сохранить?",
-                reply_markup=reply_markup
-            )
-            return CONFIRM_COLOR  # Используем состояние подтверждения
-
-async def handle_confirm_color(update: Update, context: CallbackContext) -> int:
+async def confirm_other_color(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
-
-    if query.data == "rewrite_color":
-        # Устанавливаем флаг переписывания
-        context.user_data["rewrite_color"] = True
-        await query.edit_message_text("Напишите новый цвет:")
+    
+    if query.data == "confirm_color":
+        return await ask_phone_number(update, context)
+    elif query.data == "rewrite_color":
+        await query.edit_message_text("Введите новый цвет:")
         return OTHER_COLOR
-    elif query.data == "confirm_color":
-        # Подтверждаем и переходим к следующему этапу
-        await query.edit_message_text("Цвет сохранён. Переходим к следующему шагу.")
-        return await ask_visual(update, context)
-
-
 
 async def handle_other_source(update: Update, context: CallbackContext) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("Напишите, откуда вы узнали о нас:")
-    return OTHER_SOURCE
+    return await handle_other_option(update, context, "source", OTHER_SOURCE, SOURCE)
 
 async def save_other_source(update: Update, context: CallbackContext) -> int:
-    if update.message:
-        user_input = update.message.text
-        context.user_data["source"] = user_input
+    return await save_other_option(update, context, "source", CONFIRM_SOURCE)
 
-        # Проверяем, нужно ли предложить сохранить или переписать
-        if context.user_data.get("rewrite_source"):
-            del context.user_data["rewrite_source"]  # Убираем флаг переписывания
-            await update.message.reply_text("Источник обновлён.")
-            return await complete_order(update, context)
-        else:
-            # Предлагаем переписать или сохранить
-            keyboard = [
-                [InlineKeyboardButton("Переписать", callback_data="rewrite_source")],
-                [InlineKeyboardButton("Сохранить", callback_data="confirm_source")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+async def confirm_other_source(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "confirm_source":
+        return await confirm_order(update, context)
+    elif query.data == "rewrite_source":
+        await query.edit_message_text("Введите новый источник:")
+        return OTHER_SOURCE
 
-            await update.message.reply_text(
-                f"Источник '{user_input}' сохранён. Хотите переписать или сохранить?",
-                reply_markup=reply_markup
-            )
-            return CONFIRM_SOURCE
 
-async def handle_confirm_source(update: Update, context: CallbackContext) -> int:
+
+async def confirm_order(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
 
-    if query.data == "rewrite_source":
-        # Устанавливаем флаг, чтобы бот знал, что это переписывание
-        context.user_data["rewrite_source"] = True
-        await query.edit_message_text("Напишите новый источник:")
-        return OTHER_SOURCE
-    elif query.data == "confirm_source":
-        # Подтверждаем и переходим к следующему этапу
-        await query.edit_message_text("Источник сохранён. Переходим к следующему шагу.")
-        return await complete_order(update, context)
+    category = context.user_data.get("category", "Не указано")
+    subcategory = context.user_data.get("subcategory", "Не указано")
+    length = context.user_data.get("length", "Не указано")
+    width = context.user_data.get("width", "Не указано")
+    glass = context.user_data.get("glass", "Не указано")
+    color = context.user_data.get("color", "Не указано")
+    source = context.user_data.get("source", "Не указано")
+    phone_number = context.user_data.get("phone_number", "Не указано")
 
+    order_summary = (f"📌 Ваш заказ:\n\n"
+                     f"🔹 Категория: {category}\n"
+                     f"🔹 Подкатегория: {subcategory}\n"
+                     f"📏 Размеры:\n   - Высота: {length} м\n   - Ширина: {width} м\n"
+                     f"🪟 Стекло: {glass}\n"
+                     f"🎨 Цвет: {color}\n"
+                     f"📞 Телефон: {phone_number}\n"
+                     f"📍 Источник: {source}\n\n"
+                     f"✅ Подтвердите или измените заказ:")
 
-# Модифицируем функцию complete_order для отправки файлов
+    keyboard = [
+        [InlineKeyboardButton("✅ Отправить", callback_data="confirm_send")],
+        [InlineKeyboardButton("✏️ Изменить", callback_data="confirm_edit")],
+        [InlineKeyboardButton("🏠 В главное меню", callback_data="confirm_cancel")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(order_summary, reply_markup=reply_markup, parse_mode="Markdown")
+    return CONFIRM_ORDER
+
+async def handle_confirm_order(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "confirm_send":
+        return await complete_order(update, context) 
+
+    elif query.data == "confirm_edit":
+        return await start_order(update, context) 
+
+    elif query.data == "confirm_cancel":
+        await main_menu_from_query(query) 
+        return ConversationHandler.END
+
 async def complete_order(update: Update, context: CallbackContext) -> int:
-    # Проверяем, вызван ли обработчик через callback_query или текстовое сообщение
+    access_token = get_access_token()
+    if not access_token:
+        if update.callback_query:
+            await update.callback_query.message.reply_text("❌ Произошла какая-то ошибка, напишите нам [в Telegram](https://t.me/+79953969908) об этом!!")
+        else:
+            await update.message.reply_text("❌ Произошла какая-то ошибка, напишите нам [в Telegram](https://t.me/+79953969908) об этом!!")
+        return ConversationHandler.END
+
+    tokens.default_token_manager(
+        client_id=Config.CLIENT_ID,
+        client_secret=Config.CLIENT_SECRET,
+        subdomain=Config.SUBDOMAIN,
+        redirect_url=Config.REDIRECT_URI,
+        storage=tokens.FileTokensStorage()
+    )
+
+    class CustomLead(_Lead):
+        category = custom_field.TextCustomField("Категория")
+        subcategory = custom_field.TextCustomField("Подкатегория")
+        length = custom_field.NumericCustomField("Высота")
+        width = custom_field.NumericCustomField("Ширина")
+        glass = custom_field.TextCustomField("Стекло")
+        color = custom_field.TextCustomField("Цвет")
+        phone_number = custom_field.TextCustomField("Номер телефона")
+        source = custom_field.TextCustomField("Откуда узнали о нас")
+
     if update.callback_query:
         query = update.callback_query
         await query.answer()
-        context.user_data["source"] = query.data  # Сохраняем источник из callback
+        chat_id = query.message.chat_id
+        message_sender = query.message.reply_text
     elif update.message:
-        context.user_data["source"] = context.user_data.get("source", "Не указано")  # Берем из user_data
+        chat_id = update.message.chat_id
+        message_sender = update.message.reply_text
+    else:
+        print("❌ Произошла какая-то ошибка, напишите нам [в Telegram](https://t.me/+79953969908) об этом!!")
+        return ConversationHandler.END
+    
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("⏳ Подождите минуточку, создаем для вас новую сделку...")
 
-    # Формируем список загруженных файлов
-    visuals = context.user_data.get("visuals", [])
-    visuals_list = "\n".join(visuals) if visuals else "Без визуализации"
+    
 
-    # Устанавливаем значение "Не указано" для стекла, если оно пустое или "no"
-    glass = context.user_data.get("glass", "Не указано")
-    if glass.lower() == "no":
-        glass = "Не указано"
+    pipeline = Pipeline.objects.get(Config.PIPELINE_ID)
 
-    # Формируем текст с итоговым заказом
-    order_summary = "\n".join([
-        f"Категория: {context.user_data.get('category', 'Не указано')}",
-        f"Подкатегория: {context.user_data.get('subcategory', 'Не указано')}",
-        f"Длина: {context.user_data.get('length', 'Не указано')}",
-        f"Ширина: {context.user_data.get('width', 'Не указано')}",
-        f"Стекло: {glass}",
-        f"Цвет: {context.user_data.get('color', 'Не указано')}",
-        f"Источник: {context.user_data.get('source', 'Не указано')}",
-        f"Визуализация:\n{visuals_list}"
-    ])
+    status = next((s for s in pipeline.statuses if s.id == Config.STATUS_ID), None)
 
-    # Отправляем загруженные файлы, если они есть
-    if visuals:
-        for file_path in visuals:
-            if os.path.exists(file_path):
-                try:
-                    await update.message.reply_document(
-                        document=open(file_path, 'rb'),
-                        caption=f"Файл визуализации: {os.path.basename(file_path)}"
-                    )
-                except Exception as e:
-                    print(f"Ошибка при отправке файла {file_path}: {e}")
-            else:
-                print(f"Файл не найден: {file_path}")
+    try:
+        length = float(context.user_data.get("length", 0) or 0)
+        width = float(context.user_data.get("width", 0) or 0)
 
-    # Отправляем итоговое сообщение с заказом
-    if update.callback_query:
-        await update.callback_query.edit_message_text(f"✅ Ваш заказ оформлен:\n\n{order_summary}")
-    elif update.message:
-        await update.message.reply_text(f"✅ Ваш заказ оформлен:\n\n{order_summary}")
+        glass = context.user_data.get("glass", "Не указано")
+        if glass not in GLASS_OPTIONS and glass != "Не указано":
+            glass = "Не указано"
+
+        lead = CustomLead(
+            name=f"Заказ от Telegram ({chat_id})",
+            price=0,
+            pipeline=pipeline,
+            status=status,
+            category=context.user_data.get("category", "Не указано"),
+            subcategory=context.user_data.get("subcategory", "Не указано"),
+            length=length,
+            width=width,  
+            glass=glass,
+            color=context.user_data.get("color", "Не указано"),
+            phone_number=context.user_data.get("phone_number", "Не указано"),
+            source=context.user_data.get("source", "Не указано"),
+        )
+
+        lead.save()
+
+        order_summary = (
+            f"📌 *Новая сделка в AmoCRM*:\n\n"
+            f"🔹 *Категория:* {context.user_data.get('category', 'Не указано')}\n"
+            f"🔹 *Подкатегория:* {context.user_data.get('subcategory', 'Не указано')}\n"
+            f"📏 *Размеры:*\n"
+            f"   - *Высота:* {length} м\n"
+            f"   - *Ширина:* {width} м\n"
+            f"🪟 *Стекло:* {glass}\n"
+            f"🎨 *Цвет:* {context.user_data.get('color', 'Не указано')}\n"
+            f"📞 *Телефон:* {context.user_data.get('phone_number', 'Не указано')}\n"
+            f"📍 *Источник:* {context.user_data.get('source', 'Не указано')}\n\n"
+            f"✅ *ID сделки:* {lead.id}\n"
+            f"--------------------------------------"
+        )
+
+        await context.bot.send_message(
+            chat_id=Config.SUPPORT_CHAT_ID,
+            text=order_summary,
+            parse_mode="Markdown"
+        )
+
+        
+        keyboard = [[InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="back_to_main")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            text=f"✅ Сделка успешно создана: {lead.id}!!\nСейчас работаю с другим клиентом, как освобожусь, дам информацию!",
+            reply_markup=reply_markup
+        )
+
+    except Exception as e:
+        print("❌ Произошла какая-то ошибка, напишите нам [в Telegram](https://t.me/+79953969908) об этом!!")
+        await message_sender("❌ Произошла какая-то ошибка, напишите нам [в Telegram](https://t.me/+79953969908) об этом!!")
 
     return ConversationHandler.END
 
+async def cancel_order_and_show_menu(update: Update, context: CallbackContext):
+    context.user_data.clear()
 
-# Обработчик текстового сообщения "меню"
+    if update.effective_chat.id in context.application.conversations:
+        context.application.conversations[update.effective_chat.id].cancel()
+
+    await main_menu(update, context)
+    return ConversationHandler.END
+
+async def cancel_order_and_show_menu(update: Update, context: CallbackContext):
+    context.user_data.clear()
+
+    if context.chat_data.get("conversation"):
+        context.chat_data["conversation"].update_state(None)
+
+    return await main_menu(update, context)
+
+
 async def handle_text(update: Update, context: CallbackContext):
     text = update.message.text.lower()
 
     if text == "меню":
-        await main_menu(update, context)
+        context.user_data.clear()
+        await cancel_order_and_show_menu(update, context)
     else:
         await update.message.reply_text("Извините, я не понимаю этот запрос. Напишите \"меню\", чтобы продолжить работу.")
+    
+    return ConversationHandler.END
 
 def main() -> None:
-    # Вставляем токен вашего бота
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = ApplicationBuilder().token(Config.BOT_TOKEN).build()
 
-    # Обработчики команд
-    application.add_handler(CommandHandler('start', main_menu))
-    application.add_handler(CommandHandler('menu', main_menu))  # Добавляем команду /menu
+    application.add_handler(CommandHandler('start', cancel_order_and_show_menu))
+    application.add_handler(CommandHandler('menu', cancel_order_and_show_menu))
 
-
-
-    # Обработчики callback-запросов
     application.add_handler(CallbackQueryHandler(about_company, pattern='^about$'))
     application.add_handler(CallbackQueryHandler(gallery, pattern='^gallery$'))
     application.add_handler(CallbackQueryHandler(feedback, pattern='^feedback$'))
-    application.add_handler(CallbackQueryHandler(order_status, pattern='^status$'))
     application.add_handler(CallbackQueryHandler(faq, pattern='^faq$'))
     application.add_handler(CallbackQueryHandler(back_to_main, pattern='^back_to_main$'))
     application.add_handler(CallbackQueryHandler(handle_photo_navigation, pattern='^(prev_photo|next_photo|back_to_main)$'))
+    application.add_handler(CallbackQueryHandler(support, pattern='^support$'))
 
     order_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_order, pattern="^order$")],
         states={
             CATEGORY: [CallbackQueryHandler(choose_subcategory)],
+
             SUBCATEGORY: [
+                CallbackQueryHandler(handle_subcategory_selection, pattern="^sub_.*$"),
                 CallbackQueryHandler(ask_size, pattern="^(?!back_to_category|other_subcategory).*$"),
                 CallbackQueryHandler(back_to_category, pattern="^back_to_category$"),
                 CallbackQueryHandler(handle_other_subcategory, pattern="^other_subcategory$")
             ],
             OTHER_SUBCATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_other_subcategory)],
             CONFIRM_SUBCATEGORY: [
-                CallbackQueryHandler(handle_confirm_subcategory, pattern="^(rewrite_subcategory|confirm_subcategory)$")
+                CallbackQueryHandler(confirm_other_subcategory, pattern="^(rewrite_subcategory|confirm_subcategory)$")
             ],
+
             SIZE_KNOWN: [CallbackQueryHandler(handle_size_known, pattern="^(yes|no|back_to_category)$")],
-            LENGTH: [CallbackQueryHandler(handle_length_input, pattern="^length_.*$"), CallbackQueryHandler(back_to_size_known, pattern="^back_to_size_known$")],
-            WIDTH: [CallbackQueryHandler(handle_width_input, pattern="^width_.*$"), CallbackQueryHandler(back_to_length, pattern="^back_to_length$")],
-            GLASS: [CallbackQueryHandler(ask_color, pattern="^(?!back_to_size_known).*$"), CallbackQueryHandler(back_to_size_known, pattern="^back_to_size_known$")],
+            LENGTH: [
+                CallbackQueryHandler(handle_length_input, pattern="^length_.*$"),
+                CallbackQueryHandler(back_to_size_known, pattern="^back_to_size_known$")
+            ],
+            WIDTH: [
+                CallbackQueryHandler(handle_width_input, pattern="^width_.*$"),
+                CallbackQueryHandler(back_to_length, pattern="^back_to_length$")
+            ],
+
+            GLASS: [
+                CallbackQueryHandler(ask_color, pattern="^(?!back_to_size_known).*$"),
+                CallbackQueryHandler(back_to_size_known, pattern="^back_to_size_known$")
+            ],
+
             COLOR: [
                 CallbackQueryHandler(handle_color_selection, pattern="^(?!back_to_glass|upload|skip|other_color).*$"),
                 CallbackQueryHandler(back_to_glass, pattern="^back_to_glass$"),
@@ -935,34 +1002,27 @@ def main() -> None:
             ],
             OTHER_COLOR: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_other_color)],
             CONFIRM_COLOR: [
-                CallbackQueryHandler(handle_confirm_color, pattern="^(rewrite_color|confirm_color)$")
+                CallbackQueryHandler(confirm_other_color, pattern="^(rewrite_color|confirm_color)$")
             ],
-            VISUAL: [
-                CallbackQueryHandler(handle_visual_selection, pattern="^(upload|skip)$"),
-                MessageHandler(filters.PHOTO | filters.Document.ALL, upload_visual),
-                CallbackQueryHandler(finish_visual, pattern="^next$")
-            ],
-            SOURCE: [
-                CallbackQueryHandler(complete_order, pattern="^(?!back_to_visual|other_source).*$"),
-                CallbackQueryHandler(back_to_visual, pattern="^back_to_visual$"),
-                CallbackQueryHandler(handle_other_source, pattern="^other_source$")
-            ],
+
+            PHONE_NUMBER: [MessageHandler(filters.ALL, handle_phone_number)],
+            
+            SOURCE: [CallbackQueryHandler(handle_source_selection, pattern="^(?!back_to_phone_number|other_source).*$"),
+                     CallbackQueryHandler(back_to_phone_number, pattern="^back_to_phone_number$"),
+                     CallbackQueryHandler(handle_other_source, pattern="^other_source$")],
             OTHER_SOURCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_other_source)],
-            CONFIRM_SOURCE: [
-                CallbackQueryHandler(handle_confirm_source, pattern="^(rewrite_source|confirm_source)$")
-            ]
+            CONFIRM_SOURCE: [CallbackQueryHandler(confirm_other_source, pattern="^(rewrite_source|confirm_source)$")],
+            CONFIRM_ORDER: [CallbackQueryHandler(handle_confirm_order, pattern="^(confirm_send|confirm_edit|confirm_cancel)$")]
         },
         fallbacks=[],
-        per_user=True,
-        per_message=True 
+        per_user=True
     )
 
-
-
     application.add_handler(order_handler)
-    # Обработчик текстовых сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.run_polling()
+    
 
 if __name__ == '__main__':
     main()
+
